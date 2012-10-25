@@ -18,14 +18,12 @@
 
 (in-package :exec-js)
 
-;;  Execute JavaScript
+;;  Config
 
 (defvar *node* "/usr/local/bin/node")
-(defvar *node-arguments* ())
+(defvar *node-arguments* '())
 
-(defun safe-read-from-string (string)
-  (let ((*read-eval* nil))
-    (read-from-string string)))
+;;  Conditions
 
 (define-condition execjs-error (simple-error) ())
 
@@ -39,27 +37,39 @@
    :format-control
       "Error in Javascript program : ~A~&~A"))
 
-(defun run (program args &optional in)
-  (let ((out (make-string-output-stream))
+;;  Call node
+
+(defun run/stream (program args in out err)
+  (multiple-value-bind (status code)
+      (external-program:run program
+			    args
+			    :input in
+			    :output out
+			    :error err
+			    :environment nil
+			    :replace-environment-p t
+			    :external-format :utf-8)
+    (unless (and (eq :exited status) (= 0 code))
+      (error 'js-compile-error
+	     :format-arguments `(,(get-output-stream-string err)
+				  ,code)))))
+
+(defun run (program args &key in out)
+  (let ((stream (unless out
+		  (make-string-output-stream)))
 	(err (make-string-output-stream)))
-    (unwind-protect
-	 (multiple-value-bind (status code)
-	     (external-program:run program
-				   args
-				   :input in
-				   :output out
-				   :error err
-				   :environment nil
-				   :replace-environment-p t
-				   :external-format :utf-8)
-	   (unless (and (eq :exited status) (= 0 code))
-	     (error 'js-compile-error
-		    :format-arguments `(,(get-output-stream-string err)
-					 ,code))))
-      (close out)
+    (unwind-protect (run/stream program args in (or out stream) err)
+      (when stream
+	(close stream))
       (close err))
-    (values (get-output-stream-string out)
+    (values (or out (get-output-stream-string stream))
 	    (get-output-stream-string err))))
+
+;;  Safely
+
+(defun safe-read-from-string (string)
+  (let ((*read-eval* nil))
+    (read-from-string string)))
 
 (defun parse-output (out err)
   (destructuring-bind (&optional assert js) (safe-read-from-string out)
@@ -68,27 +78,31 @@
     (when js
       (json:decode-json-from-string js))))
 
-(defun from-stream (js)
-  (multiple-value-call #'parse-output
-    (with-input-from-string (first +node-runner-prefix+)
-      (with-input-from-string (third +node-runner-suffix+)
-	(let ((js (make-concatenated-stream first js third)))
-	  (unwind-protect
-	       (run *node* *node-arguments* js)
-	    (close js)))))))
+;;  Exec
 
-(defun from-string (js)
+(defun from-stream (js &key (safely t) out)
+  (if safely
+      (with-input-from-string (first +node-runner-prefix+)
+	(with-input-from-string (third +node-runner-suffix+)
+	  (let ((js (make-concatenated-stream first js third)))
+	    (unwind-protect
+		 (multiple-value-call #'parse-output
+		   (run *node* *node-arguments* :in js :out out))
+	      (close js)))))
+      (run *node* *node-arguments* :in js :out out)))
+
+(defun from-string (js &key (safely t) out)
   (with-input-from-string (js js)
-    (from-stream js)))
+    (from-stream js :safely safely :out out)))
 
-(defun from-file (js)
+(defun from-file (js &key (safely t) out)
   (with-open-file (js js
 		      :element-type 'character
 		      :external-format :utf-8)
-    (from-stream js)))
+    (from-stream js :safely safely :out out)))
 
-(defun from (js)
+(defun from (js &key (safely t) out)
   (typecase js
-    (stream   (from-stream js))
-    (pathname (from-file   js))
-    (string   (from-string js))))
+    (stream   (from-stream js :safely safely :out out))
+    (pathname (from-file   js :safely safely :out out))
+    (string   (from-string js :safely safely :out out))))

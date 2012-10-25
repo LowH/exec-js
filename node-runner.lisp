@@ -31,12 +31,12 @@
 (in-package :exec-js)
 
 (define-constant +node-runner-prefix+
-    "(function(program, execJS) { execJS(program) })(function(module, exports, require, console, process) {{ "
+    "(function(program, execJS) { execJS(program) })(function(module, exports, require) { "
   :test 'equalp)
 
 (define-constant +node-runner-suffix+
     "
-;}}, function(program) {
+}, function(program) {
   var output, print = function(string) {
     process.stdout.write('' + string);
   };
